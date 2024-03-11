@@ -12,6 +12,7 @@ import constants as c
 import numpy as np 
 import pandas as pd
 from pandasql import sqldf
+import datetime as dt
 
 import logging
 import mysql.connector
@@ -35,8 +36,8 @@ def import_data():
         cursor.execute(sql_select_Query)
         column_names = [i[0] for i in cursor.description]
         records = cursor.fetchall()
-
-        dataset = pd.DataFrame(records, columns = column_names)
+        dataset = pd.DataFrame(records, columns = column_names).drop(columns='id_modello')
+        
         return dataset
         
     except mysql.connector.Error as e:
@@ -65,33 +66,46 @@ def enrich_dataset(dataset):
     
     grouped_regionAndInhabitants = renamed_regionAndInhabitants.groupby(['area', 'region', 'city', 'provincia'])['population'].sum().reset_index()
     grouped_regionAndInhabitants['nazione'] ='IT'
+
     dataset = pd.merge(dataset, grouped_regionAndInhabitants, how='left', on=['provincia', 'nazione'] )
 
-    #Time
-    dataset['date'] = pd.to_datetime(dataset['date'])
-    
-    dataset['year'] = dataset['date'].dt.year
-    dataset['month'] = dataset['date'].dt.month
-    dataset['day'] = dataset['date'].dt.day
-    dataset['hour'] = dataset['date'].dt.hour
-    dataset['weekday'] = dataset['date'].dt.strftime('%A') 
+    #Add time column, to set as index and fill with missing days
+    dataset['date'] = dataset['datetime'].dt.date
+    timespan = pd.DataFrame({'date':pd.date_range(dataset['date'].min(), dataset['date'].max(), freq='D')})
 
-    return dataset
+    # Merge the original DataFrame with the calendar DataFrame to fill missing dates
+    result_df = pd.concat(timespan, dataset)
+    print(result_df)
+    # Fill missing values in 'name' column with 0
+    dataset_DateIndexed = result_df['name'].fillna(0)
+
+    dataset_DateIndexed['year'] = dataset_DateIndexed['date'].dt.year
+    dataset_DateIndexed['month'] = dataset_DateIndexed['date'].dt.month
+    dataset_DateIndexed['day'] = dataset_DateIndexed['date'].dt.day
+    dataset_DateIndexed['hour'] = dataset_DateIndexed['datetime'].dt.hour
+    dataset_DateIndexed['weekday'] = dataset_DateIndexed['date'].dt.strftime('%A') 
+    #mysql_m.append_df_to_table(dataset, 'dataset')
+    return dataset_DateIndexed
 
 def customer_behavior_analysis(dataset):
     #Geographical/historical analyisis
-    time_behavior_by_region = dataset.groupby(['nazione', 'area', 'year', 'month', 'day', 'hour', 'weekday'])['ID'].count().reset_index()
+    time_behavior_by_region = dataset.groupby(['nazione', 'area', 'year', 'month', 'day', 'hour', 'weekday'])['ID']  \
+                                    .count()   \
+                                    .reset_index()
     print(time_behavior_by_region)
     """
     #Repurchases
     """
     #Identify clients that repurchased
-    repo_custs = dataset.loc[dataset['Item'] == 0, ['Customer_ID', 'ID']].groupby('Customer_ID').agg(orders_qty=('ID', 'count')).reset_index()                                                           
+    repo_custs = dataset.loc[dataset['Item'] == 0, ['Customer_ID', 'ID']].groupby('Customer_ID')  \
+                                                                         .agg(orders_qty=('ID', 'count'))  \
+                                                                         .reset_index()                                                           
     repo_custs = repo_custs.loc[repo_custs['orders_qty'] > 1, 'Customer_ID'].to_numpy()
     orders_repo_custs = dataset[dataset['Customer_ID'].isin(repo_custs)]
 
     #What is the average time of repurchases?
-    repo_time_sorted = orders_repo_custs.loc[orders_repo_custs['Item']==0, ['Customer_ID', 'date']].sort_values(by=['Customer_ID', 'date'])
+    repo_time_sorted = orders_repo_custs.loc[orders_repo_custs['Item']==0, ['Customer_ID', 'date']] \
+                                        .sort_values(by=['Customer_ID', 'date'])
     print(repo_time_sorted)
     repo_time_sorted['n_days'] = repo_time_sorted.groupby('Customer_ID')['date'].diff().dt.days 
     repo_freq = repo_time_sorted.dropna()
@@ -107,7 +121,7 @@ def customer_behavior_analysis(dataset):
     qry_repos = """
                 SELECT b.area, b.nazione, b.city, b.month, b.year, 
                        AVG(a.n_days), COUNT(DISTINCT A.Customer_ID), COUNT(DISTINCT B.Customer_ID),
-                       cast(COUNT(DISTINCT a.Customer_ID)/COUNT(DISTINCT B.Customer_ID) as dec(3,4)) as pctRepos 
+                       COUNT(DISTINCT a.Customer_ID)/COUNT(DISTINCT B.Customer_ID) as pctRepos 
                 FROM tbl1 a 
                  RIGHT JOIN tbl2 b
                  ON a.Customer_ID = b.Customer_ID
@@ -116,9 +130,9 @@ def customer_behavior_analysis(dataset):
     repoOnTotal = sqldf(qry_repos)
     
     print(repoOnTotal)
-    mysql_m.append_df_to_table(time_behavior_by_region, 'weekdays')
-    mysql_m.append_df_to_table(repos_habits.drop(columns='id_modello'), 'repurchases')
-    mysql_m.append_df_to_table(repoOnTotal, 'ratios')
+    mysql_m.replace_df(time_behavior_by_region, 'weekdays')
+    mysql_m.replace_df(repos_habits.drop(columns='id_modello'), 'repurchases')
+    mysql_m.replace_df(repoOnTotal, 'ratios')
     #Which are the regions/areas with the most sales compared to the population
     
 
