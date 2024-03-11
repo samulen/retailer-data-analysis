@@ -51,7 +51,7 @@ def import_data():
 
 def enrich_dataset(dataset):
     #Geo-demographics
-    raw_regionAndInhabitants = pd.read_excel("data\\Elenco-comuni-italiani.xls", 
+    raw_regionAndInhabitants = pd.read_excel(c.geoData, 
                                             usecols = ['Ripartizione geografica', 
                                                         'Denominazione regione', 
                                                         'city', 
